@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: onefilellm
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn api.index:app_handler
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+      - key: PYTHONPATH
+        value: . 

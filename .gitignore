@@ -1,0 +1,118 @@
+# Outputs
+*_output.txt
+processed_urls.txt
+
+# Env
+.env
+
+# Editors
+.project
+.settings
+.springBeans
+**/.favorites.json
+**/.idea
+**/.vscode
+**/*.Session.vim
+**/*.sw[a-z]
+**/*.vim
+**/*.zwc
+**/*~
+
+# OS generated files
+**/._*
+**/.AppleDouble
+**/.dccache
+**/.dropbox
+**/.dropbox.attr
+**/.dropbox.cache
+**/.DS_Store
+**/.DS_STORE
+**/.lnk
+**/.LSOverride
+**/$RECYCLE.BIN/
+**/Desktop.ini
+**/ehthumbs.db
+**/Thumbs.db
+
+# Files that might appear in the root of a volume
+**/.com.apple.timemachine.donotpresent
+**/.DocumentRevisions-V100
+**/.fseventsd
+**/.Spotlight-V100
+**/.TemporaryItems
+**/.Trashes
+**/.VolumeIcon.icns
+
+# Directories potentially created on remote AFP share
+**/.apdisk
+**/.AppleDB
+**/.AppleDesktop
+**/Network Trash Folder
+**/Temporary Items
+
+# Temp files
+**/.temp
+**/.tmp
+tmp/
+
+# Files that commonly contain secrets
+**/*.key
+**/*.pem
+**/*.pfx
+**/*.p12
+**/*.jks
+**/*.keystore
+**/*.pkcs12
+**/*.pkcs8
+**/*.pkpass
+**/*.secrets
+
+# Logs
+**/*.log
+
+# Build directories
+**/_build/
+**/dist
+build/
+out/
+target/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+
+# Output files
+output.xml
+compressed_output.txt
+processed_urls.txt
+error_output.xml
+temp_*
+
+# Misc
+.DS_Store
+.env.local
+*.swp
+.idea/
+.vscode/
+
+# SpecStory explanation file
+.specstory/.what-is-this.md
