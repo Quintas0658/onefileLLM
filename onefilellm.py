@@ -21,6 +21,18 @@ from rich.text import Text
 from rich.prompt import Prompt
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
 import xml.etree.ElementTree as ET # Keep for preprocess_text if needed
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.webdriver.chrome.service import Service
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
+    print("[yellow]Warning: Selenium not available. JavaScript rendering will be disabled.[/yellow]")
 
 # --- Configuration Flags ---
 ENABLE_COMPRESSION_AND_NLTK = False # Set to True to enable NLTK download, stopword removal, and compressed output
@@ -401,6 +413,80 @@ def process_web_pdf(url):
             os.remove(temp_pdf_path)
 
 
+def get_page_content_with_js(url, timeout=30):
+    """
+    Get page content using Selenium for JavaScript-heavy pages.
+    Falls back to requests if Selenium is not available.
+    """
+    if not SELENIUM_AVAILABLE:
+        print(f"  [yellow]Selenium not available, falling back to requests for: {url}[/yellow]")
+        try:
+            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, timeout=timeout)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            print(f"  [red]Error with requests fallback: {e}[/red]")
+            return None
+    
+    try:
+        # Set up Chrome options for headless browsing
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+        
+        # Create driver with proper architecture detection
+        try:
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        except Exception as driver_error:
+            print(f"  [yellow]Chrome driver setup failed: {driver_error}[/yellow]")
+            # Try alternative driver setup
+            try:
+                driver = webdriver.Chrome(options=chrome_options)
+            except Exception as fallback_error:
+                print(f"  [red]Fallback Chrome driver also failed: {fallback_error}[/red]")
+                raise Exception("Unable to initialize Chrome driver")
+        
+        print(f"  [cyan]Loading page with JavaScript: {url}[/cyan]")
+        driver.get(url)
+        
+        # Wait for page to load and JavaScript to execute
+        WebDriverWait(driver, timeout).until(
+            lambda driver: driver.execute_script("return document.readyState") == "complete"
+        )
+        
+        # Additional wait for dynamic content
+        import time
+        time.sleep(3)  # Give time for any AJAX requests to complete
+        
+        # Get the page source after JavaScript execution
+        html_content = driver.page_source
+        
+        driver.quit()
+        return html_content
+        
+    except Exception as e:
+        print(f"  [red]Error with Selenium: {e}[/red]")
+        if 'driver' in locals():
+            try:
+                driver.quit()
+            except:
+                pass
+        # Fallback to requests
+        try:
+            print(f"  [yellow]Falling back to requests for: {url}[/yellow]")
+            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, timeout=timeout)
+            response.raise_for_status()
+            return response.text
+        except Exception as fallback_e:
+            print(f"  [red]Error with requests fallback: {fallback_e}[/red]")
+            return None
+
+
 def crawl_and_extract_text(base_url, max_depth, include_pdfs, ignore_epubs):
     """
     Crawls a website starting from base_url, extracts text, and wraps in XML.
@@ -453,24 +539,125 @@ def crawl_and_extract_text(base_url, max_depth, include_pdfs, ignore_epubs):
 
             # Handle HTML pages
             else:
-                 # Add timeout to requests
-                response = requests.get(clean_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-                response.raise_for_status()
-
-                # Basic check for HTML content type
-                if 'text/html' not in response.headers.get('Content-Type', '').lower():
-                    print(f"  [bold yellow]Warning:[/bold yellow] Skipping non-HTML page: {clean_url} (Content-Type: {response.headers.get('Content-Type')})")
-                    page_content += f'\n<skipped>Non-HTML content type: {escape_xml(response.headers.get("Content-Type", "N/A"))}</skipped>\n'
+                # Try to get content with JavaScript rendering first
+                html_content = get_page_content_with_js(clean_url)
+                
+                if html_content is None:
+                    print(f"  [red]Failed to get content for: {clean_url}[/red]")
+                    page_content += f'\n<error>Failed to retrieve page content</error>\n'
                 else:
-                    soup = BeautifulSoup(response.content, 'html.parser')
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    
+                    # Before processing, identify content links vs navigation links
+                    content_links = []
+                    navigation_links = []
+                    
+                    # Find content-related sections (Resources, References, etc.)
+                    content_sections = []
+                    
+                    # Look for sections with "Resources:" text and their containers
+                    for element in soup.find_all(text=re.compile(r'Resources?\s*:', re.IGNORECASE)):
+                        parent = element.parent
+                        if parent:
+                            # Find the container that likely holds the resource links
+                            container = parent
+                            for _ in range(3):  # Look up to 3 levels up
+                                if container.find_next_sibling():
+                                    next_sibling = container.find_next_sibling()
+                                    if next_sibling.find_all('a', href=True):
+                                        content_sections.append(next_sibling)
+                                        break
+                                container = container.parent
+                                if not container:
+                                    break
+                    
+                    # Also look for sections with resource-related classes
+                    resource_sections = soup.find_all(['div', 'section', 'ul'], 
+                                                    class_=lambda x: x and any(keyword in x.lower() for keyword in ['resource', 'reference', 'link', 'related']))
+                    content_sections.extend(resource_sections)
+                    
+                    # Convert content links to inline format BEFORE removing HTML
+                    for section in content_sections:
+                        links = section.find_all('a', href=True)
+                        for link in links:
+                            href = link.get('href', '')
+                            text = link.get_text(strip=True)
+                            if href and text and not href.startswith(('javascript:', 'mailto:', '#')):
+                                # Make absolute URLs
+                                if href.startswith('/'):
+                                    href = urljoin(clean_url, href)
+                                elif not href.startswith('http'):
+                                    href = urljoin(clean_url, href)
+                                
+                                # Replace the link with inline format
+                                inline_text = f"{text} ({href})"
+                                link.replace_with(inline_text)
+                    
+                    # Collect navigation links for the end (before removing nav elements)
+                    nav_elements = soup.find_all(['nav', 'footer', 'aside'])
+                    for nav_element in nav_elements:
+                        links = nav_element.find_all('a', href=True)
+                        for link in links:
+                            href = link.get('href', '')
+                            text = link.get_text(strip=True)
+                            if href and text and not href.startswith(('javascript:', 'mailto:', '#')):
+                                # Make absolute URLs
+                                if href.startswith('/'):
+                                    href = urljoin(clean_url, href)
+                                elif not href.startswith('http'):
+                                    href = urljoin(clean_url, href)
+                                navigation_links.append(f"[LINK] {text}: {href}")
+                    
                     # Remove scripts, styles, etc.
-                    for element in soup(['script', 'style', 'head', 'title', 'meta', '[document]', 'nav', 'footer', 'aside']): # Added common noise tags
+                    for element in soup(['script', 'style', 'head', 'title', 'meta', '[document]', 'nav', 'footer', 'aside', 'noscript']): # Added common noise tags
                         element.decompose()
                     comments = soup.find_all(string=lambda text: isinstance(text, Comment))
                     for comment in comments:
                         comment.extract()
+                    
                     # Get text, try to preserve some structure with newlines
                     text = soup.get_text(separator='\n', strip=True)
+                    
+                    # Clean up excessive whitespace and improve formatting
+                    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # Replace multiple newlines with double newlines
+                    text = re.sub(r'[ \t]+', ' ', text)  # Replace multiple spaces/tabs with single space
+                    text = re.sub(r'\n[ \t]+', '\n', text)  # Remove leading spaces from lines
+                    
+                    # Remove common navigation/UI text that's not useful
+                    lines = text.split('\n')
+                    filtered_lines = []
+                    skip_patterns = [
+                        r'^(Skip to|Subscribe|Sign In|Hi,|Guest|Latest|Magazine|Topics|Podcasts|Store)$',
+                        r'^(The Big Idea|Data & Visuals|Case Selections|HBR Learning|HBR Executive)$',
+                        r'^(My Library|Topic Feeds|Orders|Account Settings|Email Preferences|Log Out)$',
+                        r'^(Your Cart|Your Shopping Cart is empty|Visit Our Store|Reading List)$',
+                        r'^(CLEAR|SUGGESTED TOPICS|Explore HBR)$'
+                    ]
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if line and not any(re.match(pattern, line, re.IGNORECASE) for pattern in skip_patterns):
+                            filtered_lines.append(line)
+                    
+                    text = '\n'.join(filtered_lines)
+                    
+                    # Final cleanup
+                    text = re.sub(r'\n{3,}', '\n\n', text)  # No more than 2 consecutive newlines
+                    
+                    # Add navigation links at the end if any were found
+                    if navigation_links:
+                        # Remove duplicates while preserving order
+                        seen = set()
+                        unique_nav_links = []
+                        for link in navigation_links:
+                            if link not in seen:
+                                seen.add(link)
+                                unique_nav_links.append(link)
+                        
+                        if unique_nav_links:
+                            text += '\n\n--- NAVIGATION LINKS ---\n'
+                            text += '\n'.join(unique_nav_links)
+                    
                     page_content += f'\n{text}\n' # Append raw extracted text
 
                     # Find links for the next level if depth allows
